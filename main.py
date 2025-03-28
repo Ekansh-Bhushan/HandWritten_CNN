@@ -12,15 +12,19 @@ mp_draw = mp.solutions.drawing_utils
 hands = mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.8)
 
 # Create a blank canvas for drawing
-canvas = np.zeros((480, 640), dtype=np.uint8)
-drawing = False
+canvas = np.zeros((480, 640, 3), dtype=np.uint8)
 prev_x, prev_y = None, None
+
+# Initial Drawing Parameters
+draw_color = (0, 0, 255)  # Start with Red color
+eraser_mode = False
 
 def preprocess(img):
     """Preprocess the drawn image for model input."""
-    img = cv2.resize(img, (28, 28))  # Resize to MNIST size
-    img = img / 255.0  # Normalize
-    img = img.reshape(1, 28, 28, 1)  # Reshape for the model
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    img = cv2.resize(img, (28, 28))
+    img = img / 255.0
+    img = img.reshape(1, 28, 28, 1)
     return img
 
 def predict_digit(img):
@@ -37,7 +41,7 @@ while cap.isOpened():
     if not ret:
         break
 
-    frame = cv2.flip(frame, 1)  # Flip horizontally for natural drawing
+    frame = cv2.flip(frame, 1)  # Flip for natural drawing
     h, w, _ = frame.shape
 
     # Convert the frame to RGB
@@ -49,49 +53,57 @@ while cap.isOpened():
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
             index_finger_tip = hand_landmarks.landmark[8]  # Index finger tip landmark
-
+            middle_finger_tip = hand_landmarks.landmark[12]  # Middle finger
+            ring_finger_tip = hand_landmarks.landmark[16]  # Ring finger
+            
             # Convert normalized coordinates to pixel values
             x, y = int(index_finger_tip.x * w), int(index_finger_tip.y * h)
 
+            # Gesture Recognition
+            fingers_up = [
+                hand_landmarks.landmark[8].y < hand_landmarks.landmark[6].y,  # Index Finger
+                hand_landmarks.landmark[12].y < hand_landmarks.landmark[10].y,  # Middle Finger
+                hand_landmarks.landmark[16].y < hand_landmarks.landmark[14].y,  # Ring Finger
+            ]
+
+            # Mode Selection Based on Finger Count
+            if fingers_up == [True, False, False]:  # One Finger (Draw Mode)
+                eraser_mode = False
+            elif fingers_up == [True, True, False]:  # Two Fingers (Eraser Mode)
+                eraser_mode = True
+            elif fingers_up == [True, True, True]:  # Three Fingers (Change Color)
+                if draw_color == (0, 0, 255):  # Red → Green
+                    draw_color = (0, 255, 0)
+                elif draw_color == (0, 255, 0):  # Green → Blue
+                    draw_color = (255, 0, 0)
+                else:  # Blue → Red
+                    draw_color = (0, 0, 255)
+
+            # Draw on Canvas
             if prev_x is not None and prev_y is not None:
-                cv2.line(canvas, (prev_x, prev_y), (x, y), 255, 12)  # Draw on canvas
+                if eraser_mode:
+                    cv2.line(canvas, (prev_x, prev_y), (x, y), (0, 0, 0), 25)  # Erase
+                else:
+                    cv2.line(canvas, (prev_x, prev_y), (x, y), draw_color, 12)  # Draw
 
             prev_x, prev_y = x, y
-            print("Number of landmarks detected:", len(hand_landmarks.landmark) if hand_landmarks else 0)
 
-            finger_indices = [8, 12, 16, 20]
+    # Blend the video frame with the canvas
+    canvas = cv2.resize(canvas, (frame.shape[1], frame.shape[0]))  # Match sizes
+    if len(canvas.shape) == 2:  # Convert grayscale to BGR
+        canvas = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
 
-            if hand_landmarks and len(hand_landmarks.landmark) >= 21:
-                fingers = [hand_landmarks.landmark[i].y < hand_landmarks.landmark[i - 2].y for i in finger_indices]
-            else:
-                fingers = []
-
+    blended_frame = cv2.addWeighted(frame, 0.7, canvas, 0.3, 0)
 
 
-            if all(fingers):  # If all fingers are open (hand open)
-                digit = predict_digit(canvas)
-                print("Predicted Digit:", digit)
-                cv2.putText(frame, f"Digit: {digit}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 5)
-                cv2.imshow("Canvas", canvas)
-                cv2.waitKey(1000)  # Pause for 1 second
-
-                # Clear canvas after prediction
-                canvas.fill(0)
-
-    # Display results
-    # Convert the drawing canvas to grayscale before blending
-    frame_gray = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
-
-    # Ensure both frames have the same shape
-    if frame.shape[:2] != frame_gray.shape[:2]:  
-        frame_gray = cv2.resize(frame_gray, (frame.shape[1], frame.shape[0]))
-
-    # Blend the video frame with the drawn image
-    combined = cv2.addWeighted(frame, 0.7, frame_gray, 0.3, 0)
-
-
+    # Show Mode & Color
+    cv2.putText(blended_frame, "Mode: Eraser" if eraser_mode else "Mode: Draw",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 3)
     
-    cv2.imshow("Digit Drawing", combined)
+    cv2.putText(blended_frame, f"Color: {draw_color}", (10, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, draw_color, 3)
+
+    cv2.imshow("Air Writing", blended_frame)
 
     # Exit when 'q' is pressed
     if cv2.waitKey(1) & 0xFF == ord("q"):
